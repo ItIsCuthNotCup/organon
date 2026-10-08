@@ -129,7 +129,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let screen = NSScreen.main ?? NSScreen.screens.first
         guard let screen else { return }
         let maximum = maximumPanelHeight(for: screen)
-        let height = min(maximum, max(210, proposedHeight))
+        let height = min(maximum, max(120, proposedHeight))
         let width: CGFloat = 380
         let x: CGFloat
         let top: CGFloat
