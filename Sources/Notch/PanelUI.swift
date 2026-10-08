@@ -23,7 +23,12 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var localMonitor: Any?
     private var host: NSHostingView<PanelView>?
     private let logger = Logger(subsystem: "com.itiscuthnotcup.Notch", category: "perf")
+    private var lastHiddenAt: ContinuousClock.Instant?
     var isVisible: Bool { panel?.isVisible ?? false }
+    var wasHiddenRecently: Bool {
+        guard let lastHiddenAt else { return false }
+        return lastHiddenAt.duration(to: .now) < .milliseconds(300)
+    }
 
     init(store: WindowStore) {
         self.store = store
@@ -51,8 +56,10 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func hide() {
+        guard panel?.isVisible == true else { return }
         removeMouseMonitors()
         panel?.orderOut(nil)
+        lastHiddenAt = .now
         store.panelDidClose()
         host?.removeFromSuperview()
         host = nil
@@ -381,7 +388,7 @@ final class SettingsController {
             created.isReleasedWhenClosed = false
             window = created
         }
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         window?.center()
         window?.makeKeyAndOrderFront(nil)
     }
@@ -639,14 +646,7 @@ private struct SettingsView: View {
     }
 
     private var shortcutName: String {
-        let spec = store.configuration.settings.hotKey
-        var result = ""
-        if spec.carbonModifiers & UInt32(controlKey) != 0 { result += "⌃" }
-        if spec.carbonModifiers & UInt32(optionKey) != 0 { result += "⌥" }
-        if spec.carbonModifiers & UInt32(shiftKey) != 0 { result += "⇧" }
-        if spec.carbonModifiers & UInt32(cmdKey) != 0 { result += "⌘" }
-        result += spec.keyCode == 50 ? "`" : "Key \(spec.keyCode)"
-        return result
+        KeyNames.shortcutName(for: store.configuration.settings.hotKey)
     }
 
     private func ruleDescription(_ rule: Rule) -> String {
@@ -688,7 +688,7 @@ final class OnboardingController: NSObject, ObservableObject, NSWindowDelegate {
         explanation.font = .systemFont(ofSize: 13)
         explanation.textColor = .secondaryLabelColor
         explanation.alignment = .center
-        statusLabel.stringValue = allowed ? "You're all set — press ⌃` or hover over the notch" : "Notch organizes your windows"
+        statusLabel.stringValue = allowed ? shortcutInstruction : "Notch organizes your windows"
         statusLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         statusLabel.alignment = .center
         let allowButton = NSButton(title: "Allow Access…", target: self, action: #selector(allowAccessibility))
@@ -718,6 +718,7 @@ final class OnboardingController: NSObject, ObservableObject, NSWindowDelegate {
         created.isReleasedWhenClosed = false
         created.delegate = self
         created.center()
+        NSApp.activate()
         created.makeKeyAndOrderFront(nil)
         window = created
         trustTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -725,11 +726,15 @@ final class OnboardingController: NSObject, ObservableObject, NSWindowDelegate {
                 guard let self else { return }
                 self.allowed = AXIsProcessTrusted()
                 self.statusLabel.stringValue = self.allowed
-                    ? "You're all set — press ⌃` or hover over the notch"
+                    ? self.shortcutInstruction
                     : "Notch organizes your windows"
                 if self.allowed { self.store.completeOnboarding() }
             }
         }
+    }
+
+    private var shortcutInstruction: String {
+        "You're all set — press \(KeyNames.shortcutName(for: store.configuration.settings.hotKey)) or hover over the notch"
     }
 
     @objc private func allowAccessibility() {

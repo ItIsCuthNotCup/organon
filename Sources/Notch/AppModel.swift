@@ -283,7 +283,11 @@ final class NotchController: NSObject {
     }
 
     func togglePanel() {
-        panelController.isVisible ? panelController.hide() : panelController.show()
+        if panelController.isVisible {
+            panelController.hide()
+        } else if !panelController.wasHiddenRecently {
+            panelController.show()
+        }
     }
 
     func hidePanel() { panelController.hide() }
@@ -332,7 +336,8 @@ final class NotchController: NSObject {
         let event = NSApp.currentEvent
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.option) == true {
             let menu = NSMenu()
-            menu.addItem(withTitle: "Show Windows  ⌃`", action: #selector(toggleFromMenu), keyEquivalent: "")
+            let shortcut = KeyNames.shortcutName(for: store.configuration.settings.hotKey)
+            menu.addItem(withTitle: "Show Windows  \(shortcut)", action: #selector(toggleFromMenu), keyEquivalent: "")
             menu.addItem(withTitle: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: ",")
             menu.addItem(.separator())
             menu.addItem(withTitle: "Quit Notch", action: #selector(quitFromMenu), keyEquivalent: "q")

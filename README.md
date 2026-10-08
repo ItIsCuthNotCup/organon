@@ -15,6 +15,12 @@ scripts/build-app.sh --install
 
 The build script creates an ad-hoc signed `build/Notch.app`. Because ad-hoc signatures change on rebuild, macOS may ask you to grant Accessibility permission again. Launch at login and Accessibility permissions are managed locally in System Settings.
 
+## Usage
+
+Open the panel with **⌃`** or by hovering over the notch. Click a window row to switch to it; click a group header to cycle through that group's windows. Drag a row onto another group, or right-click it and choose **Move to**, to save a permanent correction for that window. Choose **Always put <App> in…** to keep that app's windows in a category.
+
+Search with the arrow keys to select a result and Return to switch to it. Press Esc to close the panel. Right-click the menu bar icon for **Settings…** and **Quit Notch**.
+
 ## Permissions
 
 Notch uses Accessibility only to read window titles and raise the window you click. You can use the menu-bar panel without granting access, but title matching and switching will be limited. Notch asks for permission from the app itself and links directly to the Accessibility privacy pane.

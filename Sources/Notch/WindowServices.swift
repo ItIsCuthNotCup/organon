@@ -1,8 +1,26 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import Dispatch
 import Foundation
 import NotchCore
+
+private final class WindowTitleResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var titles: [UInt32: String] = [:]
+
+    func merge(_ values: [UInt32: String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        titles.merge(values) { _, latest in latest }
+    }
+
+    func snapshot() -> [UInt32: String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return titles
+    }
+}
 
 struct WindowInfo: Sendable {
     var features: WindowFeatures
@@ -37,17 +55,30 @@ enum WindowEnumerator {
             )
             windows.append(WindowInfo(features: features, bounds: bounds))
         }
+        guard AXIsProcessTrusted() else { return windows }
         let byPID = Dictionary(grouping: windows, by: { $0.features.pid })
-        for (pid, appWindows) in byPID {
+        let pids = Array(byPID.keys)
+        let titleResults = WindowTitleResults()
+        DispatchQueue.concurrentPerform(iterations: pids.count) { index in
+            let pid = pids[index]
+            guard let appWindows = byPID[pid] else { return }
             let application = AXUIElementCreateApplication(pid_t(pid))
             AXUIElementSetMessagingTimeout(application, 0.25)
             var value: CFTypeRef?
             guard AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value) == .success,
-                  let axWindows = value as? [AXUIElement] else { continue }
+                  let axWindows = value as? [AXUIElement] else { return }
+            var titles: [UInt32: String] = [:]
             for axWindow in axWindows {
                 let matchedID = matchingWindowID(axWindow, candidates: appWindows)
-                guard let matchedID, let index = windows.firstIndex(where: { $0.features.windowID == matchedID }) else { continue }
-                windows[index].features.title = title(of: axWindow) ?? windows[index].features.title
+                guard let matchedID, let title = title(of: axWindow) else { continue }
+                titles[matchedID] = title
+            }
+            titleResults.merge(titles)
+        }
+        let resolvedTitles = titleResults.snapshot()
+        for index in windows.indices {
+            if let title = resolvedTitles[windows[index].features.windowID] {
+                windows[index].features.title = title
             }
         }
         return windows
