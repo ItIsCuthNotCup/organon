@@ -108,7 +108,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             self.positionPanel(height: host.fittingSize.height, panel: panel)
         }
         let created = NSHostingView(rootView: rootView)
-        created.sizingOptions = [.preferredContentSize]
+        created.sizingOptions = [.intrinsicContentSize]
         created.translatesAutoresizingMaskIntoConstraints = false
         guard let effect = panel.contentView else { return }
         effect.addSubview(created)
