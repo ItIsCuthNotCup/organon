@@ -5,6 +5,14 @@ import ServiceManagement
 import SwiftUI
 import os
 
+private struct WindowListHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 @MainActor
 final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -97,7 +105,14 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func ensureHostedContent(in panel: NotchPanel) {
         guard host == nil else { return }
-        let created = NSHostingView(rootView: PanelView(store: store))
+        let screen = NSScreen.main ?? NSScreen.screens.first
+        let maxListHeight = screen.map { maximumPanelHeight(for: $0) - 120 } ?? 440
+        let rootView = PanelView(store: store, maxListHeight: maxListHeight) { [weak self, weak panel] in
+            guard let self, let panel, let host = self.host else { return }
+            host.layoutSubtreeIfNeeded()
+            self.positionPanel(height: host.fittingSize.height, panel: panel)
+        }
+        let created = NSHostingView(rootView: rootView)
         created.sizingOptions = [.preferredContentSize]
         created.translatesAutoresizingMaskIntoConstraints = false
         guard let effect = panel.contentView else { return }
@@ -111,10 +126,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         host = created
     }
 
+    private func maximumPanelHeight(for screen: NSScreen) -> CGFloat {
+        min(560, screen.visibleFrame.height * 0.7)
+    }
+
     private func positionPanel(height proposedHeight: CGFloat, panel: NotchPanel) {
         let screen = NSScreen.main ?? NSScreen.screens.first
         guard let screen else { return }
-        let maximum = min(560, screen.visibleFrame.height * 0.7)
+        let maximum = maximumPanelHeight(for: screen)
         let height = min(maximum, max(210, proposedHeight))
         let width: CGFloat = 380
         let x: CGFloat
@@ -157,8 +176,11 @@ final class PanelController: NSObject, NSWindowDelegate {
 
 private struct PanelView: View {
     @ObservedObject var store: WindowStore
+    let maxListHeight: CGFloat
+    let onContentHeightChange: () -> Void
     @FocusState private var searchFocused: Bool
     @State private var selectedWindowID: UInt32?
+    @State private var contentHeight: CGFloat = 0
 
     private var visibleGroups: [NotchCore.WindowGroup] {
         let query = store.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -197,19 +219,28 @@ private struct PanelView: View {
                     .frame(maxWidth: .infinity, minHeight: 130)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 2) {
+                    VStack(spacing: 2) {
                         ForEach(visibleGroups) { group in
                             groupSection(group)
                         }
                     }
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
+                    .background(GeometryReader { geometry in
+                        Color.clear.preference(key: WindowListHeightPreferenceKey.self,
+                                               value: geometry.size.height)
+                    })
                 }
-                .frame(maxHeight: 470)
+                .frame(height: min(contentHeight, maxListHeight))
             }
         }
         .frame(width: 380)
         .background(Color.clear)
+        .onPreferenceChange(WindowListHeightPreferenceKey.self) { contentHeight = $0 }
+        .onChange(of: contentHeight) { _, _ in onContentHeightChange() }
+        .onChange(of: visibleGroups.isEmpty) { _, isEmpty in
+            if isEmpty { contentHeight = 0 }
+        }
         .onAppear {
             searchFocused = true
             selectedWindowID = visibleGroups.first?.windows.first?.windowID

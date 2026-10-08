@@ -4,6 +4,30 @@ import Testing
 
 @Suite("NotchCore")
 struct NotchCoreTests {
+    @Test func defaultHotKeyUsesControlKey() {
+        #expect(HotKeySpec().carbonModifiers == 0x00001000)
+    }
+
+    @Test func configLoadMigratesOnlyTheOldDefaultHotKey() throws {
+        let migratedDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: migratedDirectory) }
+        let migratedStore = ConfigStore(directory: migratedDirectory)
+        var oldDefault = NotchConfiguration()
+        oldDefault.settings.hotKey = HotKeySpec(keyCode: 50, carbonModifiers: 0x00000100)
+        try migratedStore.save(oldDefault)
+        let migratedHotKey = try ConfigStore(directory: migratedDirectory).load().settings.hotKey
+        #expect(migratedHotKey == HotKeySpec(keyCode: 50, carbonModifiers: 0x00001000))
+
+        let customDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: customDirectory) }
+        let customStore = ConfigStore(directory: customDirectory)
+        var customHotKey = NotchConfiguration()
+        customHotKey.settings.hotKey = HotKeySpec(keyCode: 40, carbonModifiers: 0x00000100)
+        try customStore.save(customHotKey)
+        let unchangedHotKey = try ConfigStore(directory: customDirectory).load().settings.hotKey
+        #expect(unchangedHotKey == HotKeySpec(keyCode: 40, carbonModifiers: 0x00000100))
+    }
+
     @Test func acceptanceSetClassifiesEveryWindow() async {
         let inputs: [(String, String, CategoryID)] = [
             ("com.apple.Safari", "Safari", .browser),

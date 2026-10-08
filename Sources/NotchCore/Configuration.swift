@@ -4,7 +4,8 @@ public struct HotKeySpec: Codable, Hashable, Sendable {
     public var keyCode: UInt32
     public var carbonModifiers: UInt32
 
-    public init(keyCode: UInt32 = 50, carbonModifiers: UInt32 = 0x00000100) {
+    // Carbon controlKey.
+    public init(keyCode: UInt32 = 50, carbonModifiers: UInt32 = 0x00001000) {
         self.keyCode = keyCode
         self.carbonModifiers = carbonModifiers
     }
@@ -73,7 +74,12 @@ public final class ConfigStore: @unchecked Sendable {
                 try saveUnlocked(seeded)
                 return seeded
             }
-            return try decoder.decode(NotchConfiguration.self, from: Data(contentsOf: configURL))
+            var configuration = try decoder.decode(NotchConfiguration.self, from: Data(contentsOf: configURL))
+            if configuration.settings.hotKey.keyCode == 50,
+               configuration.settings.hotKey.carbonModifiers == 0x00000100 {
+                configuration.settings.hotKey.carbonModifiers = 0x00001000
+            }
+            return configuration
         }
     }
 
