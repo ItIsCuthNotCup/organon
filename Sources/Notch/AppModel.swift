@@ -9,6 +9,12 @@ extension Notification.Name {
     static let notchTogglePanel = Notification.Name("Notch.TogglePanel")
 }
 
+enum PanelKeyCommand: Sendable {
+    case up
+    case down
+    case submit
+}
+
 @MainActor
 final class WindowStore: ObservableObject {
     @Published private(set) var groups: [NotchCore.WindowGroup] = []
@@ -16,6 +22,7 @@ final class WindowStore: ObservableObject {
     @Published private(set) var focusSearchGeneration = 0
     @Published private(set) var accessibilityTrusted = AXIsProcessTrusted()
     @Published private(set) var configuration: NotchConfiguration
+    let panelKeyCommands = PassthroughSubject<PanelKeyCommand, Never>()
     let coActivity: CoActivityStore
     let icons = IconCache()
     private let configStore: ConfigStore
@@ -40,9 +47,13 @@ final class WindowStore: ObservableObject {
 
     func panelWillOpen() {
         visible = true
-        accessibilityTrusted = AXIsProcessTrusted()
+        refreshAccessibilityState()
         focusSearchGeneration += 1
         refresh()
+    }
+
+    func refreshAccessibilityState() {
+        accessibilityTrusted = AXIsProcessTrusted()
     }
 
     func panelDidClose() {

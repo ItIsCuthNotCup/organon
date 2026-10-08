@@ -29,6 +29,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var panel: NotchPanel?
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    private var keyMonitor: Any?
     private var host: NSHostingView<PanelView>?
     private let logger = Logger(subsystem: "com.itiscuthnotcup.Notch", category: "perf")
     private var lastHiddenAt: ContinuousClock.Instant?
@@ -54,6 +55,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.orderFrontRegardless()
         panel.makeKey()
         installMouseMonitors()
+        installKeyMonitor()
         DispatchQueue.main.async { [weak self, weak panel] in
             guard let self, let panel, let host = self.host else { return }
             host.layoutSubtreeIfNeeded()
@@ -66,6 +68,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     func hide() {
         guard panel?.isVisible == true else { return }
         removeMouseMonitors()
+        removeKeyMonitor()
         panel?.orderOut(nil)
         lastHiddenAt = .now
         store.panelDidClose()
@@ -172,6 +175,29 @@ final class PanelController: NSObject, NSWindowDelegate {
         globalMonitor = nil
         localMonitor = nil
     }
+
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, let panel = self.panel, event.window === panel,
+                  event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else {
+                return event
+            }
+            let command: PanelKeyCommand
+            switch event.keyCode {
+            case 125: command = .down
+            case 126: command = .up
+            case 36, 76: command = .submit
+            default: return event
+            }
+            self.store.panelKeyCommands.send(command)
+            return nil
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+    }
 }
 
 private struct PanelView: View {
@@ -218,20 +244,26 @@ private struct PanelView: View {
                                        systemImage: store.searchText.isEmpty ? "rectangle.stack" : "magnifyingglass")
                     .frame(maxWidth: .infinity, minHeight: 130)
             } else {
-                ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(visibleGroups) { group in
-                            groupSection(group)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(visibleGroups) { group in
+                                groupSection(group)
+                            }
                         }
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 8)
+                        .background(GeometryReader { geometry in
+                            Color.clear.preference(key: WindowListHeightPreferenceKey.self,
+                                                   value: geometry.size.height)
+                        })
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 8)
-                    .background(GeometryReader { geometry in
-                        Color.clear.preference(key: WindowListHeightPreferenceKey.self,
-                                               value: geometry.size.height)
-                    })
+                    .frame(height: min(contentHeight, maxListHeight))
+                    .onChange(of: selectedWindowID) { _, id in
+                        guard let id else { return }
+                        proxy.scrollTo(id)
+                    }
                 }
-                .frame(height: min(contentHeight, maxListHeight))
             }
         }
         .frame(width: 380)
@@ -247,20 +279,31 @@ private struct PanelView: View {
         }
         .onChange(of: store.focusSearchGeneration) { _, _ in searchFocused = true }
         .onMoveCommand { direction in
-            let rows = visibleGroups.flatMap(\.windows)
-            guard !rows.isEmpty else { return }
-            let index = rows.firstIndex(where: { $0.windowID == selectedWindowID }) ?? 0
             switch direction {
-            case .down: selectedWindowID = rows[(index + 1) % rows.count].windowID
-            case .up: selectedWindowID = rows[(index - 1 + rows.count) % rows.count].windowID
+            case .down: moveSelection(down: true)
+            case .up: moveSelection(down: false)
             default: break
             }
         }
-        .onSubmit(of: .search) { focusSelected() }
+        .onReceive(store.panelKeyCommands) { command in
+            switch command {
+            case .up: moveSelection(down: false)
+            case .down: moveSelection(down: true)
+            case .submit: focusSelected()
+            }
+        }
         .onExitCommand {
             if !store.searchText.isEmpty { store.searchText = "" }
             else { NotchController.shared?.hidePanel() }
         }
+    }
+
+    private func moveSelection(down: Bool) {
+        let rows = visibleGroups.flatMap(\.windows)
+        guard !rows.isEmpty else { return }
+        let index = rows.firstIndex(where: { $0.windowID == selectedWindowID }) ?? 0
+        let nextIndex = down ? (index + 1) % rows.count : (index - 1 + rows.count) % rows.count
+        selectedWindowID = rows[nextIndex].windowID
     }
 
     private var searchField: some View {
@@ -342,6 +385,7 @@ private struct PanelView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .id(window.windowID)
         .onHover { hovering in if hovering { selectedWindowID = window.windowID } }
         .draggable(String(window.windowID))
         .contextMenu {
@@ -422,6 +466,7 @@ final class SettingsController {
         NSApp.activate()
         window?.center()
         window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
     }
 }
 
@@ -701,7 +746,18 @@ final class OnboardingController: NSObject, ObservableObject, NSWindowDelegate {
     private let store: WindowStore
     private var window: NSWindow?
     private var trustTimer: Timer?
+    private var applicationActivationObserver: NSObjectProtocol?
+    private var explanationLabel: NSTextField?
+    private var allowButton: NSButton?
+    private var laterButton: NSButton?
+    private var hasLoggedUntrustedCheck = false
+    private var hasLoggedTrusted = false
+    private let logger = Logger(subsystem: "com.itiscuthnotcup.Notch", category: "onboarding")
     private let statusLabel = NSTextField(wrappingLabelWithString: "Notch organizes your windows")
+    private let untrustedExplanation =
+        "To switch to a window when you click it, Notch needs Accessibility access. macOS will ask you to allow it in System Settings. Notch only reads window titles and brings windows forward — it never moves them and nothing leaves your Mac."
+    private let trustedExplanation =
+        "Notch can now switch windows for you. Click the menu bar icon or use the shortcut anytime."
 
     init(store: WindowStore) { self.store = store }
 
@@ -714,12 +770,10 @@ final class OnboardingController: NSObject, ObservableObject, NSWindowDelegate {
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.widthAnchor.constraint(equalToConstant: 34).isActive = true
         icon.heightAnchor.constraint(equalToConstant: 34).isActive = true
-        let explanation = NSTextField(wrappingLabelWithString:
-            "To switch to a window when you click it, Notch needs Accessibility access. macOS will ask you to allow it in System Settings. Notch only reads window titles and brings windows forward — it never moves them and nothing leaves your Mac.")
+        let explanation = NSTextField(wrappingLabelWithString: untrustedExplanation)
         explanation.font = .systemFont(ofSize: 13)
         explanation.textColor = .secondaryLabelColor
         explanation.alignment = .center
-        statusLabel.stringValue = allowed ? shortcutInstruction : "Notch organizes your windows"
         statusLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         statusLabel.alignment = .center
         let allowButton = NSButton(title: "Allow Access…", target: self, action: #selector(allowAccessibility))
@@ -749,23 +803,55 @@ final class OnboardingController: NSObject, ObservableObject, NSWindowDelegate {
         created.isReleasedWhenClosed = false
         created.delegate = self
         created.center()
+        window = created
+        explanationLabel = explanation
+        self.allowButton = allowButton
+        self.laterButton = laterButton
+        applicationActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: NSApp, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.updateTrustState() }
+        }
         NSApp.activate()
         created.makeKeyAndOrderFront(nil)
-        window = created
-        trustTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.allowed = AXIsProcessTrusted()
-                self.statusLabel.stringValue = self.allowed
-                    ? self.shortcutInstruction
-                    : "Notch organizes your windows"
-                if self.allowed { self.store.completeOnboarding() }
+        created.orderFrontRegardless()
+        updateTrustState()
+        if !allowed {
+            trustTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.updateTrustState()
+                }
             }
         }
     }
 
     private var shortcutInstruction: String {
         "You're all set — press \(KeyNames.shortcutName(for: store.configuration.settings.hotKey)) or hover over the notch"
+    }
+
+    private func updateTrustState() {
+        store.refreshAccessibilityState()
+        allowed = store.accessibilityTrusted
+        statusLabel.stringValue = allowed ? shortcutInstruction : "Notch organizes your windows"
+        explanationLabel?.stringValue = allowed ? trustedExplanation : untrustedExplanation
+        allowButton?.isHidden = allowed
+        allowButton?.keyEquivalent = allowed ? "" : "\r"
+        laterButton?.title = allowed ? "Done" : "Not now"
+        laterButton?.keyEquivalent = allowed ? "\r" : ""
+
+        if allowed {
+            if !hasLoggedTrusted {
+                hasLoggedTrusted = true
+                logger.info("Accessibility trusted")
+                store.completeOnboarding()
+            }
+            trustTimer?.invalidate()
+            trustTimer = nil
+        } else if !hasLoggedUntrustedCheck {
+            hasLoggedUntrustedCheck = true
+            logger.info("Accessibility check: false")
+        }
     }
 
     @objc private func allowAccessibility() {
@@ -780,6 +866,14 @@ final class OnboardingController: NSObject, ObservableObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         trustTimer?.invalidate()
         trustTimer = nil
+        if let applicationActivationObserver {
+            NotificationCenter.default.removeObserver(applicationActivationObserver)
+            self.applicationActivationObserver = nil
+        }
         store.completeOnboarding()
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        updateTrustState()
     }
 }
