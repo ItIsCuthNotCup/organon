@@ -5,14 +5,6 @@ import ServiceManagement
 import SwiftUI
 import os
 
-private struct WindowListHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 @MainActor
 final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -206,7 +198,6 @@ private struct PanelView: View {
     let onContentHeightChange: () -> Void
     @FocusState private var searchFocused: Bool
     @State private var selectedWindowID: UInt32?
-    @State private var contentHeight: CGFloat = 0
 
     private var visibleGroups: [NotchCore.WindowGroup] {
         let query = store.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -217,6 +208,12 @@ private struct PanelView: View {
             }
             return matches.isEmpty ? nil : NotchCore.WindowGroup(category: group.category, windows: matches)
         }
+    }
+
+    private var layoutKey: String {
+        let rowCount = visibleGroups.reduce(0) { $0 + $1.windows.count }
+        let showsSuggestion = suggestion != nil && store.configuration.settings.suggestNewGroups
+        return "\(visibleGroups.count):\(rowCount):\(store.accessibilityTrusted):\(showsSuggestion)"
     }
 
     var body: some View {
@@ -244,34 +241,25 @@ private struct PanelView: View {
                                        systemImage: store.searchText.isEmpty ? "rectangle.stack" : "magnifyingglass")
                     .frame(maxWidth: .infinity, minHeight: 130)
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 2) {
-                            ForEach(visibleGroups) { group in
-                                groupSection(group)
+                ViewThatFits(in: .vertical) {
+                    listContent
+                    ScrollViewReader { proxy in
+                        ScrollView { listContent }
+                            .frame(height: maxListHeight)
+                            .onChange(of: selectedWindowID) { _, id in
+                                if let id { proxy.scrollTo(id) }
                             }
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.bottom, 8)
-                        .background(GeometryReader { geometry in
-                            Color.clear.preference(key: WindowListHeightPreferenceKey.self,
-                                                   value: geometry.size.height)
-                        })
-                    }
-                    .frame(height: min(contentHeight, maxListHeight))
-                    .onChange(of: selectedWindowID) { _, id in
-                        guard let id else { return }
-                        proxy.scrollTo(id)
                     }
                 }
+                .frame(maxHeight: maxListHeight)
             }
         }
         .frame(width: 380)
         .background(Color.clear)
-        .onPreferenceChange(WindowListHeightPreferenceKey.self) { contentHeight = $0 }
-        .onChange(of: contentHeight) { _, _ in onContentHeightChange() }
-        .onChange(of: visibleGroups.isEmpty) { _, isEmpty in
-            if isEmpty { contentHeight = 0 }
+        .onChange(of: layoutKey) { _, _ in
+            DispatchQueue.main.async {
+                onContentHeightChange()
+            }
         }
         .onAppear {
             searchFocused = true
@@ -296,6 +284,17 @@ private struct PanelView: View {
             if !store.searchText.isEmpty { store.searchText = "" }
             else { NotchController.shared?.hidePanel() }
         }
+    }
+
+    @ViewBuilder
+    private var listContent: some View {
+        VStack(spacing: 2) {
+            ForEach(visibleGroups) { group in
+                groupSection(group)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.bottom, 8)
     }
 
     private func moveSelection(down: Bool) {
